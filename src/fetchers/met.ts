@@ -37,6 +37,12 @@ export const metFetcher: Fetcher = {
     // search would only hide the engine's actual rights behaviour behind the
     // upstream API's quirk.
     const ids: number[] = [];
+    // Offset paging over a search index can repeat an ID across a page boundary
+    // when scores tie (observed live: one object at positions 1497 and 1500 of a
+    // 2000-ID `flower` query), and the same shift can skip a tied ID, which the
+    // adapter cannot recover. v1 returned a set, so keep that contract: dedupe,
+    // preserving first-seen (relevance) order.
+    const seen = new Set<number>();
     // Raw IDs consumed so far. The offset must follow what the server has sent, not
     // what survived validation, or one malformed ID would shift every later page.
     let consumed = 0;
@@ -55,7 +61,12 @@ export const metFetcher: Fetcher = {
       const rawBatch: unknown[] = Array.isArray(json.objectIDs) ? json.objectIDs : [];
       if (rawBatch.length === 0) break;
       consumed += rawBatch.length;
-      ids.push(...rawBatch.filter((n): n is number => isValidPositiveInt(n)));
+      for (const n of rawBatch) {
+        if (isValidPositiveInt(n) && !seen.has(n)) {
+          seen.add(n);
+          ids.push(n);
+        }
+      }
       if (typeof json.total === 'number' && consumed >= json.total) break;
     }
     return ids.slice(0, limit).map((n) => `met:${n}`);

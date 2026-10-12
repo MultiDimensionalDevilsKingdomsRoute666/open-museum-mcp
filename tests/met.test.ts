@@ -200,6 +200,38 @@ describe('Met adapter search endpoint (v1.1, paginated)', () => {
     expect(await metFetcher.search('q', 10)).toEqual(['met:5', 'met:6']);
   });
 
+  it('advances the next offset by the raw count the server sent, not the validated count', async () => {
+    // Page 1 carries a malformed ID. If the offset followed the validated count
+    // (2) rather than the raw count (3), page 2 would re-read from the wrong place.
+    const pages: Record<string, unknown[]> = { '0': [1, 'x', 2], '3': [3, 4, 5] };
+    const offsets: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) => {
+        const offset = new URL(String(input)).searchParams.get('offset') ?? '0';
+        offsets.push(offset);
+        return new Response(JSON.stringify({ total: 6, objectIDs: pages[offset] ?? [] }), { status: 200 });
+      }),
+    );
+    const ids = await metFetcher.search('q', 5);
+    expect(offsets).toEqual(['0', '3']);
+    expect(ids).toEqual(['met:1', 'met:2', 'met:3', 'met:4', 'met:5']);
+  });
+
+  it('returns each id once when the same id ends one page and starts the next', async () => {
+    const pages: Record<string, number[]> = { '0': [1, 2, 3], '3': [3, 4, 5] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL) => {
+        const offset = new URL(String(input)).searchParams.get('offset') ?? '0';
+        return new Response(JSON.stringify({ total: 6, objectIDs: pages[offset] ?? [] }), { status: 200 });
+      }),
+    );
+    const ids = await metFetcher.search('q', 5);
+    expect(ids).toEqual(['met:1', 'met:2', 'met:3', 'met:4', 'met:5']);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it('surfaces a retired-endpoint response as an error, not as zero results', async () => {
     vi.stubGlobal(
       'fetch',
