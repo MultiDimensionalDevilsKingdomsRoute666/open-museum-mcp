@@ -28,7 +28,7 @@ export const metFetcher: Fetcher = {
     // search would only hide the engine's actual rights behaviour behind the
     // upstream API's quirk.
 
-    const res = await httpGet(url);
+    const res = await httpGet(url, { signal: options.signal });
     if (!res.ok) throw new Error(`Met search failed: ${res.status}`);
     const json = (await res.json()) as { objectIDs?: number[] | null; total?: number };
     const ids = json.objectIDs ?? [];

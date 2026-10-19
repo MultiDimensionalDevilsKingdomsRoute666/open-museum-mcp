@@ -30,6 +30,13 @@ export const ID_REGEX = /^[a-z]+:(?!.*\.\.)[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/
 // gentle and keeps wall-clock time within the same order of magnitude.
 const DEFAULT_FETCH_CONCURRENCY = 8;
 
+// Upper bound on one source's search. Measured live (2026-10-20), a source's
+// search answers in 40 ms to 1.2 s; 15 s is more than ten times the slowest, so
+// it never trims a healthy answer, and it keeps one hung upstream from holding
+// the whole federated query. The object fetches that follow a search (the
+// slow part of a cold facets call) are not covered by this bound.
+const DEFAULT_SOURCE_TIMEOUT_MS = 15_000;
+
 // Overfetch buffer: how many candidate IDs to pull per requested result before
 // the rights gate and image filter thin them down. Bumped from 2x to 3x after
 // the Met search stopped pre-filtering to public-domain upstream — more fetched
@@ -137,6 +144,15 @@ export interface FederationOptions {
   cache: CacheStore;
   /** Override the per-museum fetch concurrency cap (default 8). */
   concurrency?: number;
+  /**
+   * Longest a single source's search may take, in milliseconds (default 15000).
+   * A source still running at the bound is aborted (its request is cancelled
+   * through `SearchOptions.signal`, and the federation stops waiting even if a
+   * fetcher ignores the signal) and reported as `timeout` in the result's
+   * `sources`, while the other sources answer normally. Must be a positive,
+   * finite number; `createFederation` throws a `RangeError` otherwise.
+   */
+  sourceTimeoutMs?: number;
   /**
    * Invoked when a fetched record is rejected by its rights gate. Rejections
    * are expected — strict-default-deny is the project's spine — so this is a
@@ -323,6 +339,10 @@ function countArtists(arts: Artwork[]): FacetCount[] {
 export function createFederation(opts: FederationOptions): Federation {
   const { fetchers, cache } = opts;
   const concurrency = opts.concurrency ?? DEFAULT_FETCH_CONCURRENCY;
+  const sourceTimeoutMs = opts.sourceTimeoutMs ?? DEFAULT_SOURCE_TIMEOUT_MS;
+  if (!Number.isFinite(sourceTimeoutMs) || sourceTimeoutMs <= 0) {
+    throw new RangeError(`sourceTimeoutMs must be a positive, finite number of milliseconds (got ${String(sourceTimeoutMs)})`);
+  }
   const onReject = opts.onReject;
   const onSourceFailure = opts.onSourceFailure;
   const engineVersion = opts.engineVersion ?? '0.0.0';
@@ -341,6 +361,30 @@ export function createFederation(opts: FederationOptions): Federation {
       }
     } catch {
       // ignored by design
+    }
+  }
+
+  // One source's search under the time bound. At the bound the signal is aborted
+  // (so a cooperating fetcher tears its request down) AND the wait is abandoned
+  // (so a fetcher that ignores the signal cannot hold the federation either).
+  // The abort reason is a TimeoutError, which `classifyFailure` reads as `timeout`.
+  async function searchWithinBound(f: Fetcher, params: SearchParams, overFetch: number): Promise<string[]> {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const bound = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const reason = new DOMException(`${f.code} search timed out after ${sourceTimeoutMs}ms`, 'TimeoutError');
+        controller.abort(reason);
+        reject(reason);
+      }, sourceTimeoutMs);
+    });
+    try {
+      return await Promise.race([
+        f.search(params.query, overFetch, { hasImage: params.has_image, signal: controller.signal }),
+        bound,
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -454,7 +498,7 @@ export function createFederation(opts: FederationOptions): Federation {
         fetcherList.map(async (f): Promise<{ ids: string[]; status: SourceStatus }> => {
           const started = Date.now();
           try {
-            const ids = await f.search(params.query, overFetch, { hasImage: params.has_image });
+            const ids = await searchWithinBound(f, params, overFetch);
             return { ids, status: { museum: f.code, status: 'ok', ms: Date.now() - started } };
           } catch (err) {
             const status = failedSource(f.code, err, Date.now() - started);

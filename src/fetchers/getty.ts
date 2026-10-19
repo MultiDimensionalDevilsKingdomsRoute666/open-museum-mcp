@@ -152,7 +152,7 @@ SELECT DISTINCT ?obj WHERE {
 
     const url = new URL(SPARQL_ENDPOINT);
     url.searchParams.set('query', sparql);
-    const res = await httpGet(url, { headers: { Accept: 'application/sparql-results+json' } });
+    const res = await httpGet(url, { headers: { Accept: 'application/sparql-results+json' }, signal: options.signal });
     if (!res.ok) throw new Error(`Getty SPARQL search failed: ${res.status}`);
     const json = (await res.json()) as { results?: { bindings?: Array<{ obj?: { value?: string } }> } };
     const bindings = json.results?.bindings ?? [];
