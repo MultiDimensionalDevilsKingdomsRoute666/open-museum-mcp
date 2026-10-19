@@ -161,4 +161,16 @@ describe('runAll', () => {
     expect(await codes('keyed')).toEqual(['europeana']);
     expect(await codes('all')).toEqual(['met', 'europeana']);
   });
+
+  it('fails a source that is skipped but is not in the declared key-gated list', async () => {
+    const core = {
+      FETCHER_REGISTRY: [{ code: 'met' }, { code: 'europeana' }],
+      metFetcher: stub('met', { requiresApiKey: 'MET_API_KEY' }),
+      europeanaFetcher: stub('europeana', { requiresApiKey: 'EUROPEANA_API_KEY' }),
+    };
+    const results = await runAll(core, {}, {});
+    expect(results.map((r: { status: string }) => r.status)).toEqual(['unexpected-skip', 'skipped']);
+    expect(results.filter(isFailure).map((r: { code: string }) => r.code)).toEqual(['met']);
+    expect(formatReport(results)).toMatch(/FAIL\s+met/);
+  });
 });

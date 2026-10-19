@@ -19,6 +19,8 @@
 // upstream answered), `snapshot` (an ingest-only source read its bundled
 // snapshot, so there is no upstream to check) and `skipped` (a key-gated
 // source with no key, never checked at all). Only `ok` counts as verified.
+// A skip is only tolerated for the sources in EXPECTED_KEY_GATED; any other
+// source that ends up skipped fails the run.
 // `--scope` splits the key-gated sources from the rest so a workflow can hand
 // API keys to a step that runs only those.
 
@@ -29,6 +31,14 @@ export const DEFAULTS = {
   searchLimit: 10,
   timeoutMs: 60_000,
 };
+
+/**
+ * The sources that are expected to need an API key, declared here and not
+ * derived from the fetchers. A source may only end up skipped if it is in this
+ * list: a keyless source that starts reporting `requiresApiKey` (or otherwise
+ * stops being checked) is a failure, so no live source can drop out quietly.
+ */
+export const EXPECTED_KEY_GATED = ['europeana', 'smithsonian', 'harvard'];
 
 function withTimeout(promise, ms, label) {
   let timer;
@@ -44,7 +54,8 @@ function describeError(err) {
 
 /**
  * Check one source. Returns `{ code, status, detail }` where status is one of
- * `ok`, `snapshot` (ingest-only source: the bundled snapshot loaded, which is
+ * `ok`, `unexpected-skip` (runAll only: skipped but not an expected key-gated
+ * source), `snapshot` (ingest-only source: the bundled snapshot loaded, which is
  * not a live check), `skipped`, `error` (search threw: HTTP 4xx/410, auth, timeout),
  * `empty` (search succeeded but returned no IDs), `unfetchable` (IDs came back
  * but no record could be fetched) or `unaccepted` (records fetched, none passed
@@ -135,7 +146,16 @@ export async function runAll(core, options = {}, env = process.env) {
       });
       continue;
     }
-    results.push(await checkSource(fetcher, options, env));
+    const result = await checkSource(fetcher, options, env);
+    if (result.status === 'skipped' && !EXPECTED_KEY_GATED.includes(result.code)) {
+      results.push({
+        code: result.code,
+        status: 'unexpected-skip',
+        detail: `skipped (${result.detail}) but not in the declared key-gated list, so it was never checked`,
+      });
+      continue;
+    }
+    results.push(result);
   }
   return results;
 }
