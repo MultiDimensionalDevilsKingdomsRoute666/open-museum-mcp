@@ -13,9 +13,14 @@
 // the local build. Fetchers are called directly, so the object cache is never
 // consulted and a dead upstream cannot be masked by cached records.
 //
-// Usage: node source-health.mjs [--query horse] [--json]
-// Exit code: 0 when every checked source is healthy, 1 otherwise. Key-gated
-// sources without a key are reported as skipped, not failed.
+// Usage: node source-health.mjs [--query horse] [--json] [--scope keyed|keyless]
+// Exit code: 0 when no checked source is failing, 1 otherwise. Three kinds of
+// pass are kept apart because they prove different things: `ok` (a live
+// upstream answered), `snapshot` (an ingest-only source read its bundled
+// snapshot, so there is no upstream to check) and `skipped` (a key-gated
+// source with no key, never checked at all). Only `ok` counts as verified.
+// `--scope` splits the key-gated sources from the rest so a workflow can hand
+// API keys to a step that runs only those.
 
 import { pathToFileURL } from 'node:url';
 
@@ -39,7 +44,8 @@ function describeError(err) {
 
 /**
  * Check one source. Returns `{ code, status, detail }` where status is one of
- * `ok`, `skipped`, `error` (search threw: HTTP 4xx/410, auth, timeout),
+ * `ok`, `snapshot` (ingest-only source: the bundled snapshot loaded, which is
+ * not a live check), `skipped`, `error` (search threw: HTTP 4xx/410, auth, timeout),
  * `empty` (search succeeded but returned no IDs), `unfetchable` (IDs came back
  * but no record could be fetched) or `unaccepted` (records fetched, none passed
  * the rights gate).
@@ -92,6 +98,13 @@ export async function checkSource(fetcher, options = {}, env = process.env) {
       detail: `fetched ${fetched} of ${ids.length} records and none passed the rights gate`,
     };
   }
+  if (fetcher.ingestOnly) {
+    return {
+      code,
+      status: 'snapshot',
+      detail: `bundled snapshot, not a live check (${ids.length} results, record fetched and accepted)`,
+    };
+  }
   return { code, status: 'ok', detail: `${ids.length} results, record fetched and accepted` };
 }
 
@@ -103,9 +116,17 @@ export function resolveFetchers(core) {
   }));
 }
 
+/** Which sources a scope covers: key-gated ones, the rest, or both. */
+function inScope(entry, fetcher, scope) {
+  if (!scope || scope === 'all') return true;
+  const gated = Boolean((fetcher ?? entry).requiresApiKey);
+  return scope === 'keyed' ? gated : !gated;
+}
+
 export async function runAll(core, options = {}, env = process.env) {
   const results = [];
   for (const { entry, fetcher } of resolveFetchers(core)) {
+    if (!inScope(entry, fetcher, options.scope)) continue;
     if (!fetcher) {
       results.push({
         code: entry.code,
@@ -120,22 +141,49 @@ export async function runAll(core, options = {}, env = process.env) {
 }
 
 export function isFailure(result) {
-  return result.status !== 'ok' && result.status !== 'skipped';
+  return !['ok', 'snapshot', 'skipped'].includes(result.status);
+}
+
+/** Counts by kind of outcome; `verified` is only sources a live upstream answered. */
+export function summarize(results) {
+  const count = (pred) => results.filter(pred).length;
+  return {
+    total: results.length,
+    verified: count((r) => r.status === 'ok'),
+    snapshot: count((r) => r.status === 'snapshot'),
+    skipped: count((r) => r.status === 'skipped'),
+    failing: count(isFailure),
+  };
+}
+
+export function formatSummary(results) {
+  const c = summarize(results);
+  const parts = [`${c.verified} verified live`];
+  if (c.snapshot) parts.push(`${c.snapshot} bundled snapshot (not a live check)`);
+  if (c.skipped) parts.push(`${c.skipped} skipped (no key, not checked)`);
+  parts.push(`${c.failing} failing`);
+  return `${c.total} sources: ${parts.join(', ')}.`;
 }
 
 export function formatReport(results) {
   const lines = results.map(
-    (r) => `${isFailure(r) ? 'FAIL' : r.status === 'skipped' ? 'SKIP' : ' ok '}  ${r.code.padEnd(12)} ${r.status.padEnd(12)} ${r.detail}`,
+    (r) => `${isFailure(r) ? 'FAIL' : r.status === 'skipped' ? 'SKIP' : r.status === 'snapshot' ? 'SNAP' : ' ok '}  ${r.code.padEnd(12)} ${r.status.padEnd(12)} ${r.detail}`,
   );
-  const failed = results.filter(isFailure).length;
-  lines.push('', `${results.length - failed} of ${results.length} sources healthy${failed ? `, ${failed} failing` : ''}.`);
+  lines.push('', formatSummary(results));
   return lines.join('\n');
 }
 
 async function main() {
   const args = process.argv.slice(2);
   const qi = args.indexOf('--query');
-  const options = qi >= 0 && args[qi + 1] ? { query: args[qi + 1] } : {};
+  const si = args.indexOf('--scope');
+  const scope = si >= 0 ? args[si + 1] : 'all';
+  if (!['all', 'keyed', 'keyless'].includes(scope)) {
+    console.error('--scope must be one of: all, keyed, keyless');
+    process.exitCode = 2;
+    return;
+  }
+  const options = { scope, ...(qi >= 0 && args[qi + 1] ? { query: args[qi + 1] } : {}) };
 
   const core = await import('open-museum-mcp/core');
   const results = await runAll(core, options);

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error plain ESM script with no type declarations
-import { checkSource, formatReport, isFailure, runAll } from '../scripts/source-health.mjs';
+import { checkSource, formatReport, isFailure, runAll, summarize } from '../scripts/source-health.mjs';
 
 interface StubOptions {
   search?: () => Promise<string[]>;
   getRaw?: (id: string) => Promise<unknown>;
   accept?: (raw: unknown) => boolean;
   requiresApiKey?: string;
+  ingestOnly?: true;
 }
 
 function stub(code: string, o: StubOptions = {}) {
@@ -14,6 +15,7 @@ function stub(code: string, o: StubOptions = {}) {
     code,
     name: code,
     requiresApiKey: o.requiresApiKey,
+    ingestOnly: o.ingestOnly,
     search: o.search ?? (async () => ['1', '2']),
     getRaw: o.getRaw ?? (async (id: string) => ({ id })),
     normalize: (raw: unknown) =>
@@ -108,7 +110,55 @@ describe('runAll', () => {
       aicFetcher: stub('aic'),
     };
     const report = formatReport(await runAll(core, {}, {}));
-    expect(report).toContain('1 of 2 sources healthy, 1 failing.');
+    expect(report).toContain('2 sources: 1 verified live, 1 failing.');
     expect(report).toMatch(/FAIL\s+met/);
+  });
+
+  it('never counts a skipped source as healthy', async () => {
+    const core = {
+      FETCHER_REGISTRY: [{ code: 'met' }, { code: 'europeana' }, { code: 'smithsonian' }],
+      metFetcher: stub('met'),
+      europeanaFetcher: stub('europeana', { requiresApiKey: 'EUROPEANA_API_KEY' }),
+      smithsonianFetcher: stub('smithsonian', { requiresApiKey: 'SMITHSONIAN_API_KEY' }),
+    };
+    const results = await runAll(core, {}, {});
+    expect(summarize(results)).toEqual({ total: 3, verified: 1, snapshot: 0, skipped: 2, failing: 0 });
+    const report = formatReport(results);
+    expect(report).toContain('3 sources: 1 verified live, 2 skipped (no key, not checked), 0 failing.');
+    expect(report).not.toMatch(/healthy/);
+  });
+
+  it('labels an ingest-only source as a bundled snapshot, not a live check', async () => {
+    const core = {
+      FETCHER_REGISTRY: [{ code: 'met' }, { code: 'nga' }],
+      metFetcher: stub('met'),
+      ngaFetcher: stub('nga', { ingestOnly: true }),
+    };
+    const results = await runAll(core, {}, {});
+    expect(results.map((r: { status: string }) => r.status)).toEqual(['ok', 'snapshot']);
+    expect(results.some(isFailure)).toBe(false);
+    const report = formatReport(results);
+    expect(report).toContain('bundled snapshot, not a live check');
+    expect(report).toContain('2 sources: 1 verified live, 1 bundled snapshot (not a live check), 0 failing.');
+  });
+
+  it('still fails an ingest-only source whose snapshot returns nothing', async () => {
+    const f = stub('walters', { ingestOnly: true, search: async () => [] });
+    const r = await checkSource(f, {}, {});
+    expect(r.status).toBe('empty');
+    expect(isFailure(r)).toBe(true);
+  });
+
+  it('limits a run to key-gated or keyless sources by scope', async () => {
+    const core = {
+      FETCHER_REGISTRY: [{ code: 'met' }, { code: 'europeana', requiresApiKey: 'EUROPEANA_API_KEY' }],
+      metFetcher: stub('met'),
+      europeanaFetcher: stub('europeana', { requiresApiKey: 'EUROPEANA_API_KEY' }),
+    };
+    const codes = async (scope: string) =>
+      (await runAll(core, { scope }, {})).map((r: { code: string }) => r.code);
+    expect(await codes('keyless')).toEqual(['met']);
+    expect(await codes('keyed')).toEqual(['europeana']);
+    expect(await codes('all')).toEqual(['met', 'europeana']);
   });
 });

@@ -21,6 +21,7 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -38,8 +39,21 @@ jobs:
           echo "version=$(node -p "require('./node_modules/open-museum-mcp/package.json').version")" >> "$GITHUB_OUTPUT"
         id: install
 
-      - name: Query every source
-        id: health
+      # Two steps so the API keys reach only the step that needs them: the
+      # keyless sources run with no secrets in their environment at all.
+      - name: Query keyless sources
+        id: keyless
+        working-directory: probe
+        env:
+          NODE_OPTIONS: --experimental-sqlite
+        run: |
+          set +e
+          node source-health.mjs --scope keyless > ../report-keyless.txt 2>../stderr-keyless.txt
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          cat ../report-keyless.txt
+
+      - name: Query key-gated sources
+        id: keyed
         working-directory: probe
         env:
           NODE_OPTIONS: --experimental-sqlite
@@ -48,23 +62,33 @@ jobs:
           HARVARD_API_KEY: ${{ secrets.HARVARD_API_KEY }}
         run: |
           set +e
-          node source-health.mjs > ../report.txt 2>../stderr.txt
+          node source-health.mjs --scope keyed > ../report-keyed.txt 2>../stderr-keyed.txt
           echo "exit=$?" >> "$GITHUB_OUTPUT"
-          cat ../report.txt
+          cat ../report-keyed.txt
 
-      - name: Close any open tracking issue (all sources healthy)
-        if: steps.health.outputs.exit == '0'
+      - name: Close any open tracking issue (no source failing)
+        if: steps.keyless.outputs.exit == '0' && steps.keyed.outputs.exit == '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           existing=$(gh issue list --state open --search "in:title \"${TRACKING_ISSUE_TITLE}\"" --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "Every source passed its live check against \`open-museum-mcp@${{ steps.install.outputs.version }}\`. Closing."
+            {
+              echo "No source is failing against \`open-museum-mcp@${{ steps.install.outputs.version }}\`. Every source that could be checked passed; sources that were skipped or read a bundled snapshot were not verified live:"
+              echo
+              echo '```'
+              tail -n 1 report-keyless.txt
+              tail -n 1 report-keyed.txt
+              echo '```'
+              echo
+              echo "Closing."
+            } > close.md
+            gh issue comment "$existing" --body-file close.md
             gh issue close "$existing"
           fi
 
       - name: Open or update the tracking issue (a source is failing)
-        if: steps.health.outputs.exit != '0'
+        if: steps.keyless.outputs.exit != '0' || steps.keyed.outputs.exit != '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -72,11 +96,28 @@ jobs:
             echo "At least one source failed its live check against \`open-museum-mcp@${{ steps.install.outputs.version }}\`:"
             echo
             echo '```'
-            cat report.txt
+            cat report-keyless.txt report-keyed.txt
             echo '```'
             echo
+            skipped=$(grep -h '^SKIP' report-keyless.txt report-keyed.txt || true)
+            if [ -n "$skipped" ]; then
+              echo "Not checked at all (no key), so their health is unknown:"
+              echo
+              echo '```'
+              echo "$skipped"
+              echo '```'
+              echo
+            fi
+            if [ -s stderr-keyless.txt ] || [ -s stderr-keyed.txt ]; then
+              echo "Script stderr:"
+              echo
+              echo '```'
+              cat stderr-keyless.txt stderr-keyed.txt
+              echo '```'
+              echo
+            fi
             echo "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-            echo "This re-checks daily and closes itself once every source passes."
+            echo "This re-checks daily and closes itself once no source is failing."
           } > body.md
           existing=$(gh issue list --state open --search "in:title \"${TRACKING_ISSUE_TITLE}\"" --json number --jq '.[0].number')
           if [ -n "$existing" ]; then
@@ -86,5 +127,5 @@ jobs:
           fi
 
       - name: Fail the run so the failure is visible in the Actions tab
-        if: steps.health.outputs.exit != '0'
+        if: steps.keyless.outputs.exit != '0' || steps.keyed.outputs.exit != '0'
         run: exit 1
