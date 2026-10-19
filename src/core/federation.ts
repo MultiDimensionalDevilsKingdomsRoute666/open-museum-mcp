@@ -224,8 +224,13 @@ function searchCacheKey(
   museum: string | undefined,
   hasImage: boolean,
   overFetch: number,
+  sources: string[],
 ): string {
-  return JSON.stringify({ q: query, m: museum ?? '*', hi: hasImage, of: overFetch });
+  // The sorted source codes are part of the key: a cached list is only valid for
+  // the exact set of sources that produced it. Without them, a source registered
+  // (or restored) after the entry was written would be reported `ok` for a query
+  // it never ran.
+  return JSON.stringify({ q: query, m: museum ?? '*', hi: hasImage, of: overFetch, s: [...sources].sort() });
 }
 
 // Merge per-museum ID lists round-robin (museum 0's first, museum 1's first,
@@ -324,6 +329,21 @@ export function createFederation(opts: FederationOptions): Federation {
   const clock = opts.clock ?? (() => new Date().toISOString());
   const extractColor = opts.extractColor;
 
+  // The hook is a diagnostic for the host, never a gate: a hook that throws (or
+  // returns a rejecting promise) must not turn a partial failure into a failed
+  // search, so both are swallowed.
+  function notifySourceFailure(status: SourceStatus): void {
+    if (!onSourceFailure) return;
+    try {
+      const out: unknown = onSourceFailure(status);
+      if (out && typeof (out as PromiseLike<unknown>).then === 'function') {
+        void Promise.resolve(out).catch(() => undefined);
+      }
+    } catch {
+      // ignored by design
+    }
+  }
+
   async function getArtwork(id: string): Promise<FetchOutcome> {
     if (!ID_REGEX.test(id)) {
       return { ok: false, reason: `invalid artwork id: ${id}` };
@@ -405,13 +425,20 @@ export function createFederation(opts: FederationOptions): Federation {
     }
 
     const overFetch = params.has_image ? params.limit * OVERFETCH_FACTOR : params.limit;
-    const cacheKey = searchCacheKey(params.query, params.museum, params.has_image, overFetch);
+    const cacheKey = searchCacheKey(
+      params.query,
+      params.museum,
+      params.has_image,
+      overFetch,
+      fetcherList.map((f) => f.code),
+    );
 
     let allIds = await cache.getQuery(cacheKey);
     let sources: SourceStatus[];
     if (allIds) {
       // A cached list is only ever written when every source answered (below),
-      // so each queried source was ok when it was stored. No timing: nothing ran.
+      // and the key carries the exact source set, so each queried source was ok
+      // when it was stored. No timing: nothing ran.
       sources = fetcherList.map((f) => ({ museum: f.code, status: 'ok' as const }));
     } else {
       // A fetcher's search can throw (museum outage, rate limit, network). We
@@ -431,7 +458,7 @@ export function createFederation(opts: FederationOptions): Federation {
             return { ids, status: { museum: f.code, status: 'ok', ms: Date.now() - started } };
           } catch (err) {
             const status = failedSource(f.code, err, Date.now() - started);
-            onSourceFailure?.(status);
+            notifySourceFailure(status);
             return { ids: [], status };
           }
         }),

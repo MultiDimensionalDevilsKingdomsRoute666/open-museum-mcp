@@ -17,14 +17,16 @@ export interface SourceStatus {
   status: SourceStatusKind;
   /**
    * Why the source failed, sanitised: no URLs beyond their origin, no keys,
-   * tokens or headers, no stack trace, single line, length-capped. Present only
+   * tokens or headers, no local paths, no stack trace, single line,
+   * length-capped. Present only
    * when `status` is not `ok`.
    */
   error?: string;
   /**
    * Wall-clock milliseconds the source's search took. Absent when the answer
-   * came from the query cache: a cache entry is written only when every source
-   * answered, so a cached query reports each source as `ok` without a timing.
+   * came from the query cache: a cache entry is keyed by the exact set of
+   * sources queried and written only when every one of them answered, so a
+   * cached query reports each source as `ok` without a timing.
    */
   ms?: number;
 }
@@ -58,15 +60,34 @@ export function classifyFailure(err: unknown): 'error' | 'timeout' {
 const URL_PATTERN = /\bhttps?:\/\/[^\s"'<>)\]]+/gi;
 const HEADER_LINE = /\b(authorization|proxy-authorization|x-api-key|api-key|cookie|set-cookie)\b\s*[:=]\s*[^\n,;]*/gi;
 const BEARER = /\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi;
-const SECRET_PAIR = /\b(api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password|passwd|key|signature|sig)\b\s*[=:]\s*[^\s&,;"']+/gi;
+// A credential's NAME, matched by suffix so every vendor spelling is caught
+// (`key`, `apikey`, Europeana's `wskey`, `client_secret`, `access_token`, `sig`,
+// `oauth`) while ordinary words that merely contain one (`keyword`, `design`,
+// `author`) are left alone: the name must END in the marker, right before the
+// separator.
+const SECRET_NAME = '[A-Za-z0-9_.-]*(?:key|token|secret|passw(?:or)?d|credential|signature|sig|auth)';
+// name, optional closing quote (JSON `"apikey":"v"`), separator, then a quoted
+// or bare value. The opening quote is optional and not captured.
+const SECRET_PAIR = new RegExp(`\\b(${SECRET_NAME})["']?\\s*[=:]\\s*("[^"]*"|'[^']*'|[^\\s&,;"'}]+)`, 'gi');
+// Query-string parameters of a URL that has no scheme (`host/path?wskey=...`), so
+// the URL rule above never saw it. Here the name may merely CONTAIN a marker
+// (`partner_token_v2`): inside a query string the leaner rule is the safer one.
+const QUERY_SECRET = /([?&])([^=&\s"'#]*(?:key|token|secret|passw|credential|sig|auth)[^=&\s"'#]*)=[^&\s"'#]*/gi;
+// Absolute POSIX (`/a/b/c`, `~/a/b`) and Windows (`C:\\a\\b`) paths. At least two
+// segments, and never preceded by a word character, `:` or `/`, so URL paths,
+// `application/json` and `a/b` stay intact.
+const POSIX_PATH = /(?<![\w:/.])~?(?:\/[\w.@+~-]+){2,}\/?/g;
+const WINDOWS_PATH = /\b[A-Za-z]:\\(?:[^\\\s'"]+\\)*[^\\\s'"]*/g;
 const STACK_FRAME = /\s+at\s+[^\n]*(\([^\n]*\)|:\d+:\d+)[^\n]*/g;
 
 /**
  * Make an upstream error message safe to hand to a client and a log line. A
  * museum's error text can echo the request URL (with an API key in the query
  * string), a header value, or a stack trace; none of that may leave the engine.
- * URLs are cut to their origin, key/token pairs and credential headers are
- * replaced, only the first line survives, and the result is length-capped.
+ * URLs are cut to their origin, credentials are replaced by NAME in every form
+ * (bare pairs, quoted JSON keys, query parameters of scheme-less URLs, credential
+ * headers), local file paths are reduced to the file name, only the first line
+ * survives, and the result is length-capped.
  */
 export function sanitizeSourceError(err: unknown): string {
   const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : 'source failed';
@@ -82,6 +103,9 @@ export function sanitizeSourceError(err: unknown): string {
     .replace(HEADER_LINE, (_m, name: string) => `${name}: [redacted]`)
     .replace(BEARER, (_m, scheme: string) => `${scheme} [redacted]`)
     .replace(SECRET_PAIR, (_m, name: string) => `${name}=[redacted]`)
+    .replace(QUERY_SECRET, (_m, sep: string, name: string) => `${sep}${name}=[redacted]`)
+    .replace(WINDOWS_PATH, (path) => path.split('\\').filter(Boolean).pop() ?? '[path]')
+    .replace(POSIX_PATH, (path) => path.split('/').filter(Boolean).pop() ?? '[path]')
     .replace(/\s+/g, ' ')
     .trim();
   const text = cleaned || 'source failed';

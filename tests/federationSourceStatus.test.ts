@@ -251,3 +251,127 @@ describe('classifyFailure', () => {
     expect(classifyFailure('weird')).toBe('error');
   });
 });
+
+describe('redaction by key name, in every form', () => {
+  const KEY = 'AbCdEf0123456789SECRETVALUE';
+  const hostile: Array<[string, string]> = [
+    ['a quoted JSON apikey', `HTTP 401 {"apikey":"${KEY}","error":"bad"}`],
+    ['a quoted JSON key', `HTTP 401 {"key":"${KEY}"}`],
+    ['a quoted JSON wskey', `HTTP 401 {"wskey":"${KEY}"}`],
+    ['a quoted JSON token with spaces', `upstream said { "token" : "${KEY}" }`],
+    ['a single-quoted pair', `bad config {'client_secret': '${KEY}'}`],
+    ['a scheme-less URL with wskey', `request to api.europeana.eu/record/v2/search.json?wskey=${KEY} failed`],
+    ['a scheme-less URL with api_key', `request to api.example.org/v1/search?q=horse&api_key=${KEY} failed`],
+    ['a scheme-less URL with a custom key param', `GET host.example/x?q=1&partner_token_v2=${KEY}&n=2`],
+    ['a scheme-less URL with sig', `GET host.example/x?sig=${KEY}`],
+    ['a bare wskey pair', `bad request: wskey=${KEY}`],
+    ['a bare ws_key pair', `bad request: ws_key: ${KEY}`],
+    ['a password pair', `login failed password=${KEY}`],
+  ];
+
+  it.each(hostile)('redacts %s', (_label, message) => {
+    expect(sanitizeSourceError(new Error(message))).not.toContain(KEY);
+  });
+
+  it('keeps the non-secret parts of a redacted message readable', () => {
+    const out = sanitizeSourceError(new Error(`request to api.europeana.eu/record/v2/search.json?q=horse&wskey=${KEY} failed`));
+    expect(out).toContain('q=horse');
+    expect(out).toContain('failed');
+  });
+
+  it('does not eat ordinary words that merely contain a key-ish substring', () => {
+    expect(sanitizeSourceError(new Error('design: rejected, keyword unsupported, author: unknown'))).toBe(
+      'design: rejected, keyword unsupported, author: unknown',
+    );
+  });
+});
+
+describe('local paths are not leaked', () => {
+  it.each([
+    ['a POSIX path', "ENOENT: no such file or directory, open '/Users/pramod/.config/keys.json'", '/Users', 'keys.json'],
+    ['a deep install path', 'bundle missing: /opt/app/node_modules/open-museum-mcp/dist/data/nga.json', '/opt/app', 'nga.json'],
+    ['a home-relative path', 'cannot read ~/.open-museum-mcp/cache.db', '.open-museum-mcp', 'cache.db'],
+    ['a Windows path', 'ENOENT: open C:\\Users\\pramod\\data\\walters.json', 'Users', 'walters.json'],
+  ])('reduces %s to its file name', (_label, message, leaked, kept) => {
+    const out = sanitizeSourceError(new Error(message));
+    expect(out).not.toContain(leaked);
+    expect(out).toContain(kept);
+  });
+
+  it('leaves URL origins, MIME types and short slashes alone', () => {
+    expect(sanitizeSourceError(new Error('got application/json from https://api.example.org/v1/x (HTTP 500)'))).toBe(
+      'got application/json from https://api.example.org (HTTP 500)',
+    );
+  });
+});
+
+describe('a throwing onSourceFailure hook', () => {
+  it('never fails the search; the failed source is still reported', async () => {
+    const onSourceFailure = vi.fn(() => {
+      throw new Error('hook boom');
+    });
+    const { federation } = build([source('met', { failWith: new Error('Met search failed: 410') }), source('aic', { ids: ['aic:2'] })], {
+      onSourceFailure,
+    });
+    const result = await federation.search(params());
+    expect(onSourceFailure).toHaveBeenCalledTimes(1);
+    expect(result.results.map((r) => r.id)).toEqual(['aic:2']);
+    expect(result.sources.find((s) => s.museum === 'met')?.status).toBe('error');
+  });
+
+  it('survives an async hook that rejects, without an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on('unhandledRejection', listener);
+    try {
+      // a plain function, not vi.fn: the spy attaches its own handler to the
+      // returned promise, which would mask exactly the rejection under test
+      const onSourceFailure = async () => {
+        throw new Error('async boom');
+      };
+      const { federation } = build([source('met', { failWith: new Error('x') }), source('aic', { ids: ['aic:2'] })], {
+        onSourceFailure: onSourceFailure as unknown as (s: SourceStatus) => void,
+      });
+      const result = await federation.search(params());
+      expect(result.results).toHaveLength(1);
+      // unhandledRejection fires once the microtask queue drains
+      await new Promise((r) => setTimeout(r, 20));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', listener);
+    }
+  });
+});
+
+describe('a cache hit never vouches for a source that did not run', () => {
+  it('a source registered after the entry was cached is queried, not reported ok from cache', async () => {
+    const cache = memoryCache();
+    const one = createFederation({ fetchers: { met: source('met', { ids: ['met:1'] }) }, cache: cache.store });
+    await one.search(params());
+    expect(cache.queries.size).toBe(1);
+
+    const two = createFederation({
+      fetchers: { met: source('met', { ids: ['met:1'] }), getty: source('getty', { failWith: new Error('Getty down') }) },
+      cache: cache.store,
+    });
+    const result = await two.search(params());
+    const getty = result.sources.find((s) => s.museum === 'getty');
+    expect(getty?.status).toBe('error');
+    expect(getty?.error).toContain('Getty down');
+  });
+
+  it('the same source set still hits the cache regardless of registration order', async () => {
+    const cache = memoryCache();
+    const a = createFederation({
+      fetchers: { met: source('met', { ids: ['met:1'] }), aic: source('aic', { ids: ['aic:2'] }) },
+      cache: cache.store,
+    });
+    await a.search(params());
+    const b = createFederation({
+      fetchers: { aic: source('aic', { ids: ['aic:2'] }), met: source('met', { ids: ['met:1'] }) },
+      cache: cache.store,
+    });
+    await b.search(params());
+    expect(cache.queries.size).toBe(1);
+  });
+});
