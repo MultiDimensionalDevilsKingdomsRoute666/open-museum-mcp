@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Search and facets report each source's status instead of dropping its error.** `SearchResult` and `FacetResult` gain a required `sources: SourceStatus[]`, one entry per source queried: `{ museum, status: 'ok' | 'error' | 'timeout', error?, ms? }`. Previously a source whose search threw contributed nothing and the failure was discarded, so a retired or re-keyed upstream (the Met's v1 search returning 410 for 18 days, Getty's SPARQL endpoint returning 401) read as "no results from that museum". `error` carries the fetcher's own message, sanitised before it leaves the engine: URLs are cut to their origin, keys, tokens and credential headers are replaced, and only the first line survives, capped at 300 characters. A query answered from the cache reports each source as `ok` without a timing, since a cache entry is only written when every source answered. `SourceStatus`, `SourceStatusKind`, `SOURCE_STATUSES` and `allSourcesFailed` are exported from `/core`.
+- **`onSourceFailure` hook on `createFederation`,** called once per failed source with the sanitised status. The MCP server logs it to stderr.
+- **`search_artworks` and `facets` return an MCP error when every queried source failed,** listing each source's message, so total failure no longer looks like `count: 0`. A partial failure still returns the normal result with the failures in `sources`.
+
+### Changed
+
+- **Breaking for TypeScript consumers that construct a `SearchResult` or `FacetResult` by hand:** `sources` is a required field. Results returned by the federation always include it. The `/core` public shape grows by this field, which is why this ships as a minor release.
+
 ## [0.21.0] — 2026-09-10
 
 ### Added
