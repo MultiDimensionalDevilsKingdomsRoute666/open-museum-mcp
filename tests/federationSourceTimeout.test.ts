@@ -209,6 +209,33 @@ describe('per-source search timeout', () => {
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('rejects an unusable bound (%s)', (bad) => {
     expect(() => build([answers('met', [])], { sourceTimeoutMs: bad })).toThrow(RangeError);
   });
+
+  it.each([2 ** 31, 2 ** 31 + 1, 1e12, Number.MAX_VALUE])(
+    'a bound above the largest timer delay (%s) does not fire at once',
+    async (huge) => {
+      const { federation } = build([hangsIgnoringSignal('met'), answers('aic', ['aic:2'])], { sourceTimeoutMs: huge });
+      let settled = false;
+      const pending = federation.search(params()).then((r) => {
+        settled = true;
+        return r;
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2 ** 31 - 1);
+      const result = await pending;
+      expect(result.sources.find((s) => s.museum === 'met')?.status).toBe('timeout');
+      expect(result.sources.find((s) => s.museum === 'aic')?.status).toBe('ok');
+    },
+  );
+
+  it('the largest timer delay itself is accepted unchanged', async () => {
+    const { federation } = build([hangsIgnoringSignal('met'), answers('aic', ['aic:2'])], { sourceTimeoutMs: 2 ** 31 - 1 });
+    const pending = federation.search(params());
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(2 ** 31 - 1);
+    const result = await pending;
+    expect(result.sources.find((s) => s.museum === 'met')?.status).toBe('timeout');
+  });
 });
 
 describe('every live fetcher forwards the abort signal to its search request', () => {

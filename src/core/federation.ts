@@ -36,6 +36,8 @@ const DEFAULT_FETCH_CONCURRENCY = 8;
 // the whole federated query. The object fetches that follow a search (the
 // slow part of a cold facets call) are not covered by this bound.
 const DEFAULT_SOURCE_TIMEOUT_MS = 15_000;
+/** Largest delay `setTimeout` honours (2^31 - 1 ms, about 24.8 days); above it the timer fires at once. */
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 // Overfetch buffer: how many candidate IDs to pull per requested result before
 // the rights gate and image filter thin them down. Bumped from 2x to 3x after
@@ -339,10 +341,14 @@ function countArtists(arts: Artwork[]): FacetCount[] {
 export function createFederation(opts: FederationOptions): Federation {
   const { fetchers, cache } = opts;
   const concurrency = opts.concurrency ?? DEFAULT_FETCH_CONCURRENCY;
-  const sourceTimeoutMs = opts.sourceTimeoutMs ?? DEFAULT_SOURCE_TIMEOUT_MS;
-  if (!Number.isFinite(sourceTimeoutMs) || sourceTimeoutMs <= 0) {
-    throw new RangeError(`sourceTimeoutMs must be a positive, finite number of milliseconds (got ${String(sourceTimeoutMs)})`);
+  const requestedTimeoutMs = opts.sourceTimeoutMs ?? DEFAULT_SOURCE_TIMEOUT_MS;
+  if (!Number.isFinite(requestedTimeoutMs) || requestedTimeoutMs <= 0) {
+    throw new RangeError(`sourceTimeoutMs must be a positive, finite number of milliseconds (got ${String(requestedTimeoutMs)})`);
   }
+  // setTimeout stores its delay in a signed 32-bit integer; anything larger fires
+  // after 1ms, which would time every source out at once. A bound that long means
+  // "effectively none", so it is held at the largest delay a timer accepts.
+  const sourceTimeoutMs = Math.min(requestedTimeoutMs, MAX_TIMER_DELAY_MS);
   const onReject = opts.onReject;
   const onSourceFailure = opts.onSourceFailure;
   const engineVersion = opts.engineVersion ?? '0.0.0';
