@@ -286,6 +286,51 @@ describe('redaction by key name, in every form', () => {
   });
 });
 
+describe('credentials hidden by an encoding are still redacted', () => {
+  const KEY = 'AbCdEf0123456789SECRETVALUE';
+  const hostile: Array<[string, string]> = [
+    ['backslash-escaped JSON', String.raw`HTTP 401 {\"apikey\":\"${KEY}\"}`],
+    ['doubly backslash-escaped JSON', String.raw`HTTP 401 {\\\"apikey\\\":\\\"${KEY}\\\"}`],
+    ['a percent-encoded equals', `request failed: apikey%3D${KEY}`],
+    ['a percent-encoded colon', `request failed: wskey%3A${KEY}`],
+    ['a percent-encoded JSON body', `body=%7B%22apikey%22%3A%22${KEY}%22%7D`],
+    ['a lowercase percent-encoded JSON body', `body=%7b%22token%22%3a%22${KEY}%22%7d`],
+    ['a doubly percent-encoded pair', `request failed: apikey%253D${KEY}`],
+    ['a percent-encoded scheme-less query', `GET host.example/x?q=1%26api_key%3D${KEY}`],
+  ];
+
+  it.each(hostile)('redacts %s', (_label, message) => {
+    expect(sanitizeSourceError(new Error(message))).not.toContain(KEY);
+  });
+
+  it('leaves ordinary percent-escapes and a lone percent sign readable', () => {
+    expect(sanitizeSourceError(new Error('bad query q=blue%20horse, 100% failed'))).toBe('bad query q=blue horse, 100% failed');
+  });
+});
+
+describe('redaction cost is bounded whatever a source sends back', () => {
+  const hostile: Array<[string, string]> = [
+    ['a long run of name characters', 'a-'.repeat(16000)],
+    ['a long run with a marker at the end', `${'a'.repeat(30000)}key`],
+    ['a long query-like run', `?${'a'.repeat(30000)}`],
+    ['a long run of ampersand parameters', `?${'k&'.repeat(15000)}`],
+    ['a long run of escaped quotes', '\\"'.repeat(15000)],
+    ['a long run of percent escapes', '%41'.repeat(15000)],
+  ];
+
+  it.each(hostile)('finishes fast on %s', (_label, message) => {
+    const started = performance.now();
+    const out = sanitizeSourceError(new Error(message));
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(out.length).toBeLessThanOrEqual(300);
+  });
+
+  it('still redacts a credential inside the scanned window of a long message', () => {
+    const out = sanitizeSourceError(new Error(`apikey=SECRETVALUE ${'x'.repeat(30000)}`));
+    expect(out).not.toContain('SECRETVALUE');
+  });
+});
+
 describe('local paths are not leaked', () => {
   it.each([
     ['a POSIX path', "ENOENT: no such file or directory, open '/Users/pramod/.config/keys.json'", '/Users', 'keys.json'],

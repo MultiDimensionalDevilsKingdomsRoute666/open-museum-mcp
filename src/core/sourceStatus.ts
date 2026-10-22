@@ -65,14 +65,37 @@ const BEARER = /\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi;
 // `oauth`) while ordinary words that merely contain one (`keyword`, `design`,
 // `author`) are left alone: the name must END in the marker, right before the
 // separator.
-const SECRET_NAME = '[A-Za-z0-9_.-]*(?:key|token|secret|passw(?:or)?d|credential|signature|sig|auth)';
+// The prefix is bounded: an unbounded `*` ahead of the marker backtracks
+// quadratically on a long run of name characters (ReDoS).
+const SECRET_NAME = '[A-Za-z0-9_.-]{0,40}(?:key|token|secret|passw(?:or)?d|credential|signature|sig|auth)';
 // name, optional closing quote (JSON `"apikey":"v"`), separator, then a quoted
 // or bare value. The opening quote is optional and not captured.
 const SECRET_PAIR = new RegExp(`\\b(${SECRET_NAME})["']?\\s*[=:]\\s*("[^"]*"|'[^']*'|[^\\s&,;"'}]+)`, 'gi');
 // Query-string parameters of a URL that has no scheme (`host/path?wskey=...`), so
 // the URL rule above never saw it. Here the name may merely CONTAIN a marker
 // (`partner_token_v2`): inside a query string the leaner rule is the safer one.
-const QUERY_SECRET = /([?&])([^=&\s"'#]*(?:key|token|secret|passw|credential|sig|auth)[^=&\s"'#]*)=[^&\s"'#]*/gi;
+const QUERY_SECRET = /([?&])([^=&\s"'#]{0,64}(?:key|token|secret|passw|credential|sig|auth)[^=&\s"'#]{0,64})=[^&\s"'#]*/gi;
+// Most of an upstream message the redaction rules will ever look at. Applied
+// BEFORE any regex runs, so the cost is bounded whatever a museum sends back.
+const MAX_SCAN_LENGTH = 2000;
+const ESCAPED_QUOTE = /\\+(["'])/g;
+const PERCENT_ESCAPE = /%[0-9A-Fa-f]{2}/g;
+
+/**
+ * Undo the encodings that hide a credential from the rules below: backslash-escaped
+ * quotes (a JSON body embedded in a JSON string: `{\"apikey\":\"v\"}`) and
+ * percent-escaped separators (`apikey%3Dv`, `%7B%22apikey%22%3A%22v%22%7D`). Two
+ * passes cover a doubly percent-encoded value. Output is the decoded text: this
+ * is an error message for people, not a value anything parses back.
+ */
+function decodeForScan(text: string): string {
+  let out = text.replace(ESCAPED_QUOTE, '$1');
+  for (let pass = 0; pass < 2 && out.includes('%'); pass++) {
+    out = out.replace(PERCENT_ESCAPE, (esc) => String.fromCharCode(parseInt(esc.slice(1), 16)));
+    out = out.replace(ESCAPED_QUOTE, '$1');
+  }
+  return out;
+}
 // Absolute POSIX (`/a/b/c`, `~/a/b`) and Windows (`C:\\a\\b`) paths. At least two
 // segments, and never preceded by a word character, `:` or `/`, so URL paths,
 // `application/json` and `a/b` stay intact.
@@ -91,7 +114,7 @@ const STACK_FRAME = /\s+at\s+[^\n]*(\([^\n]*\)|:\d+:\d+)[^\n]*/g;
  */
 export function sanitizeSourceError(err: unknown): string {
   const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : 'source failed';
-  const firstLine = raw.replace(STACK_FRAME, '').split(/\r?\n/)[0] ?? '';
+  const firstLine = decodeForScan(raw.slice(0, MAX_SCAN_LENGTH).replace(STACK_FRAME, '').split(/\r?\n/)[0] ?? '');
   const cleaned = firstLine
     .replace(URL_PATTERN, (url) => {
       try {
