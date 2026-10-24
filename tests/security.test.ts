@@ -515,14 +515,18 @@ describe('parseDisplayDate — algorithmic-complexity DoS guard', () => {
 });
 
 describe('stripHtml — polynomial-ReDoS guard (CodeQL js/polynomial-redos)', () => {
-  it('strips a 1M-char all-"<" payload in <50ms (input bounded before the O(n²) regex)', () => {
-    // Without the STRIP_INPUT_MAX ceiling, `<[^>]*>` on this input is O(n²) and
-    // would hang the sanitizer on attacker-controlled museum text.
-    const payload = '<'.repeat(1_000_000);
+  it('strips a 100k-char all-"<" payload in linear time', () => {
+    // A `<[^>]*>` global replace is O(n²) on this input: measured 2.1s at 40k
+    // chars, so over 10s at 100k. The linear scan takes well under 1ms. The
+    // ceiling sits far from both, so host load (one run measured 28x slower
+    // than usual) cannot fail it and a quadratic regression cannot pass it.
+    // The payload stays small enough that a regression fails here rather than
+    // hanging the run: synchronous regex work cannot be interrupted by a timeout.
+    const payload = '<'.repeat(100_000);
     const start = performance.now();
     const out = sanitizeTitle(payload);
     const elapsed = performance.now() - start;
-    expect(elapsed).toBeLessThan(50);
+    expect(elapsed).toBeLessThan(1000);
     expect(out.length).toBeLessThanOrEqual(256);
   });
 
