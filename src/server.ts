@@ -37,6 +37,7 @@ import { smkFetcher } from './fetchers/smk.js';
 import { waltersFetcher } from './fetchers/walters.js';
 import { wellcomeFetcher } from './fetchers/wellcome.js';
 import { wikimediaFetcher } from './fetchers/wikimedia.js';
+import { ycbaFetcher } from './fetchers/ycba.js';
 import type { Fetcher } from './fetchers/types.js';
 import { VERSION } from './version.js';
 
@@ -72,6 +73,9 @@ const FETCHERS: Record<string, Fetcher> = {
   // Getty Museum — FEDERATE via the public SPARQL endpoint (no REST search or
   // bulk dump exists); per-record REST hydration, keyless, no key required.
   [gettyFetcher.code]: gettyFetcher,
+  // Yale Center for British Art — FEDERATE via Yale's LUX search API; rights read
+  // per object from the YCBA IIIF manifest, keyless, no key required.
+  [ycbaFetcher.code]: ycbaFetcher,
 };
 
 // Europeana requires a per-user API key (free tier, 10K req/day). Only
@@ -171,7 +175,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           museum: {
             type: 'string',
             description:
-              'Optional museum code. Always available: met, cleveland, aic, rijksmuseum, walters, smk, wellcome, nga, getty, wikimedia (Commons). Key-gated: europeana (EUROPEANA_API_KEY), smithsonian (SMITHSONIAN_API_KEY), harvard (HARVARD_API_KEY). Omit to search every registered source.',
+              'Optional museum code. Always available: met, cleveland, aic, rijksmuseum, walters, smk, wellcome, nga, getty, ycba, wikimedia (Commons). Key-gated: europeana (EUROPEANA_API_KEY), smithsonian (SMITHSONIAN_API_KEY), harvard (HARVARD_API_KEY). Omit to search every registered source.',
           },
           has_image: {
             type: 'boolean',
