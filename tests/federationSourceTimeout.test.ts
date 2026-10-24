@@ -7,11 +7,13 @@ import { europeanaFetcher } from '../src/fetchers/europeana.js';
 import { gettyFetcher } from '../src/fetchers/getty.js';
 import { harvardFetcher } from '../src/fetchers/harvard.js';
 import { metFetcher } from '../src/fetchers/met.js';
+import { FETCHER_REGISTRY } from '../src/fetchers/registry.js';
 import { rijksmuseumFetcher } from '../src/fetchers/rijksmuseum.js';
 import { smithsonianFetcher } from '../src/fetchers/smithsonian.js';
 import { smkFetcher } from '../src/fetchers/smk.js';
 import { wellcomeFetcher } from '../src/fetchers/wellcome.js';
 import { wikimediaFetcher } from '../src/fetchers/wikimedia.js';
+import { ycbaFetcher } from '../src/fetchers/ycba.js';
 import type { Artwork } from '../src/types.js';
 
 function makeArtwork(id: string): Artwork {
@@ -251,7 +253,13 @@ describe('every live fetcher forwards the abort signal to its search request', (
     ['smk', smkFetcher],
     ['wellcome', wellcomeFetcher],
     ['wikimedia', wikimediaFetcher],
+    ['ycba', ycbaFetcher],
   ];
+
+  it('covers every source that searches live', () => {
+    const expected = FETCHER_REGISTRY.filter((f) => !f.ingestOnly).map((f) => f.code);
+    expect(live.map(([code]) => code).sort()).toEqual(expected.sort());
+  });
 
   beforeEach(() => {
     vi.stubEnv('EUROPEANA_API_KEY', 'test-key');
