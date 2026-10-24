@@ -273,6 +273,23 @@ describe('YCBA adapter normalization', () => {
     expect(rejectionReason(rawOf(f, ACCEPTED_MANIFEST))).toContain('Yale image server');
   });
 
+  it('rejects a well-formed ycba: image service on any host but the Yale image server', () => {
+    const path = '/iiif/2/ycba:19504a99-09b0-4810-bb04-31ff694953f5';
+    for (const origin of [
+      'https://images.evil.example',
+      'https://images.collections.yale.edu.evil.com',
+      'http://images.collections.yale.edu',
+    ]) {
+      const f = clone(fixture('ycba-accepted.json'));
+      const resource = (firstCanvas(f.manifest).images as Array<Record<string, unknown>>)[0].resource as Record<
+        string,
+        unknown
+      >;
+      (resource.service as Record<string, unknown>)['@id'] = `${origin}${path}`;
+      expect(rejectionReason(rawOf(f, ACCEPTED_MANIFEST))).toContain('Yale image server');
+    }
+  });
+
   it('rejects a not-found marker from getRaw', () => {
     expect(rejectionReason({ notFound: true, id: ACCEPTED_ID })).toContain('not found');
   });
