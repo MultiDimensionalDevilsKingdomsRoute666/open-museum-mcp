@@ -65,15 +65,23 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 /**
  * GET a Yale JSON resource inside the concurrency limit, retrying transient
  * failures (network errors and RETRYABLE_STATUS) with backoff. Resolves with
- * the final status and, for a 2xx, the parsed body.
+ * the final status and, for a 2xx, the parsed body. `redirect` is passed
+ * through to fetch.
  */
-async function yaleGetJson(url: string): Promise<{ status: number; body: unknown }> {
+async function yaleGetJson(
+  url: string,
+  redirect: RequestInit['redirect'] = 'follow',
+): Promise<{ status: number; body: unknown }> {
   for (let attempt = 0; ; attempt++) {
     const canRetry = attempt < RETRY_DELAYS_MS.length;
     await acquireSlot();
     let outcome: { status: number; body: unknown };
     try {
-      const res = await httpGet(url, { headers: JSON_ACCEPT, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+      const res = await httpGet(url, {
+        headers: JSON_ACCEPT,
+        redirect,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
       outcome = { status: res.status, body: res.ok ? await res.json() : null };
     } catch (err) {
       if (!canRetry) throw err;
@@ -248,13 +256,15 @@ export const ycbaFetcher: Fetcher = {
 
     // SSRF guard: the manifest URL comes from the upstream record, so it is
     // fetched only when it is exactly a YCBA manifest URL on Yale's manifest
-    // host (https, fixed path, numeric id). Anything else is never requested.
+    // host (https, fixed path, numeric id). Anything else is never requested,
+    // and a redirect is refused rather than followed, so the host check holds
+    // for the address actually fetched.
     const manifestUrl =
       record && typeof record === 'object' ? findManifestUrl(record as Record<string, unknown>) : undefined;
     let manifest: unknown = null;
     if (manifestUrl && YCBA_MANIFEST_URL_RE.test(manifestUrl)) {
       try {
-        const res = await yaleGetJson(manifestUrl);
+        const res = await yaleGetJson(manifestUrl, 'error');
         if (res.status >= 200 && res.status < 300) manifest = res.body;
       } catch {
         // An unreadable manifest is the same as no rights signal: the gate

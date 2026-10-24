@@ -44,6 +44,17 @@ function setCopyrightStatement(manifest: Record<string, unknown>, value: unknown
   entry.value = value;
 }
 
+function canvasesOf(manifest: Record<string, unknown>): Array<Record<string, unknown>> {
+  const seq = (manifest.sequences as Array<Record<string, unknown>>)[0];
+  return seq.canvases as Array<Record<string, unknown>>;
+}
+
+function imageUseRightsEntry(canvas: Record<string, unknown>): Record<string, unknown> {
+  const entry = (canvas.metadata as Array<Record<string, unknown>>).find((e) => e.label === 'Image Use Rights');
+  if (!entry) throw new Error('canvas has no Image Use Rights');
+  return entry;
+}
+
 function rejectionReason(raw: unknown): string {
   const result = ycbaFetcher.normalize(raw);
   expect(result.status).toBe('rejected');
@@ -156,6 +167,41 @@ describe('YCBA adapter normalization', () => {
     const f = clone(fixture('ycba-accepted.json'));
     delete firstCanvas(f.manifest).metadata;
     expect(rejectionReason(rawOf(f, ACCEPTED_MANIFEST))).toContain('Image Use Rights=null');
+  });
+
+  it('matches the canvas Image Use Rights exactly (surrounding whitespace, case and wording matter)', () => {
+    const statement = imageUseRightsEntry(firstCanvas(fixture('ycba-accepted.json').manifest)).value as string;
+    for (const variant of [
+      ` ${statement}`,
+      `${statement} `,
+      `${statement}\n`,
+      statement.toLowerCase(),
+      statement.replace('(CC0 1.0)', '(CC0)'),
+    ]) {
+      const f = clone(fixture('ycba-accepted.json'));
+      imageUseRightsEntry(firstCanvas(f.manifest)).value = variant;
+      expect(rejectionReason(rawOf(f, ACCEPTED_MANIFEST))).toContain('Image Use Rights=');
+    }
+  });
+
+  it('emits the image of the canvas whose rights were checked, never a later canvas', () => {
+    // Canvas 0 is the real CC0 Stubbs canvas (image A); canvas 1 is the real
+    // In Copyright Hockney canvas (image B). Only image A may be emitted.
+    const f = clone(fixture('ycba-accepted.json'));
+    canvasesOf(f.manifest).push(clone(firstCanvas(fixture('ycba-rejected-hockney.json').manifest)));
+    const result = ycbaFetcher.normalize(rawOf(f, ACCEPTED_MANIFEST));
+    expect(result.status).toBe('accepted');
+    if (result.status !== 'accepted') return;
+    for (const url of [result.artwork.imageUrls.full, result.artwork.imageUrls.large, result.artwork.imageUrls.thumbnail]) {
+      expect(url).toContain('ycba:19504a99-09b0-4810-bb04-31ff694953f5');
+      expect(url).not.toContain('ycba:3b5ed3d8-7485-4050-919c-46cff2a2322a');
+    }
+  });
+
+  it('rejects when the first canvas is In Copyright, even if a later canvas is CC0', () => {
+    const f = clone(fixture('ycba-accepted.json'));
+    canvasesOf(f.manifest).unshift(clone(firstCanvas(fixture('ycba-rejected-hockney.json').manifest)));
+    expect(rejectionReason(rawOf(f, ACCEPTED_MANIFEST))).toContain('In Copyright');
   });
 
   it('never treats the manifest-level CC0 license as a rights signal', () => {
@@ -330,6 +376,37 @@ describe('YCBA getRaw: two-hop hydration', () => {
     expect(ycbaFetcher.normalize(raw).status).toBe('rejected');
   });
 
+  it('drops a record that 410s (gone) instead of throwing', async () => {
+    const calls = stubFetch(() => new Response('Gone', { status: 410 }));
+    const raw = await ycbaFetcher.getRaw(ACCEPTED_ID);
+    expect(calls).toHaveLength(1);
+    expect(rejectionReason(raw)).toContain('not found');
+  });
+
+  it('bounds every Yale request with the 20s timeout', async () => {
+    const f = fixture('ycba-accepted.json');
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const signals: Array<AbortSignal | null | undefined> = [];
+    globalThis.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return String(input) === ACCEPTED_MANIFEST ? json(f.manifest) : json(f.record);
+    }) as unknown as typeof fetch;
+    await ycbaFetcher.getRaw(ACCEPTED_ID);
+    expect(timeout.mock.calls).toEqual([[20_000], [20_000]]);
+    expect(signals).toEqual(timeout.mock.results.map((r) => r.value));
+  });
+
+  it('refuses redirects on the manifest hop, so the host check covers the address fetched', async () => {
+    const f = fixture('ycba-accepted.json');
+    const redirects = new Map<string, RequestInit['redirect']>();
+    globalThis.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      redirects.set(String(input), init?.redirect);
+      return String(input) === ACCEPTED_MANIFEST ? json(f.manifest) : json(f.record);
+    }) as unknown as typeof fetch;
+    await ycbaFetcher.getRaw(ACCEPTED_ID);
+    expect(redirects.get(ACCEPTED_MANIFEST)).toBe('error');
+  });
+
   it('fails closed (no throw) when the manifest fetch errors', async () => {
     const f = fixture('ycba-accepted.json');
     stubFetch((url) => (url === ACCEPTED_MANIFEST ? new Response('gone', { status: 404 }) : json(f.record)));
@@ -359,7 +436,7 @@ describe('YCBA resilience: backoff and bounded concurrency', () => {
     vi.restoreAllMocks();
   });
 
-  it('retries a 500 with backoff, then succeeds', async () => {
+  it('retries a 500 after 500ms, then after a further 1500ms, then succeeds', async () => {
     const f = fixture('ycba-accepted.json');
     let recordAttempts = 0;
     stubFetch((url) => {
@@ -368,9 +445,48 @@ describe('YCBA resilience: backoff and bounded concurrency', () => {
       return recordAttempts < 3 ? new Response('err', { status: 500 }) : json(f.record);
     });
     const pending = ycbaFetcher.getRaw(ACCEPTED_ID);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(recordAttempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(499);
+    expect(recordAttempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(recordAttempts).toBe(2);
+    await vi.advanceTimersByTimeAsync(1499);
+    expect(recordAttempts).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(recordAttempts).toBe(3);
+    const raw = await pending;
+    expect(ycbaFetcher.normalize(raw).status).toBe('accepted');
+  });
+
+  it('retries a 429, then succeeds', async () => {
+    const f = fixture('ycba-accepted.json');
+    let recordAttempts = 0;
+    stubFetch((url) => {
+      if (url === ACCEPTED_MANIFEST) return json(f.manifest);
+      recordAttempts++;
+      return recordAttempts < 2 ? new Response('slow down', { status: 429 }) : json(f.record);
+    });
+    const pending = ycbaFetcher.getRaw(ACCEPTED_ID);
     await vi.runAllTimersAsync();
     const raw = await pending;
-    expect(recordAttempts).toBe(3);
+    expect(recordAttempts).toBe(2);
+    expect(ycbaFetcher.normalize(raw).status).toBe('accepted');
+  });
+
+  it('retries a network error, then succeeds', async () => {
+    const f = fixture('ycba-accepted.json');
+    let recordAttempts = 0;
+    stubFetch((url) => {
+      if (url === ACCEPTED_MANIFEST) return json(f.manifest);
+      recordAttempts++;
+      if (recordAttempts < 2) throw new TypeError('fetch failed');
+      return json(f.record);
+    });
+    const pending = ycbaFetcher.getRaw(ACCEPTED_ID);
+    await vi.runAllTimersAsync();
+    const raw = await pending;
+    expect(recordAttempts).toBe(2);
     expect(ycbaFetcher.normalize(raw).status).toBe('accepted');
   });
 
