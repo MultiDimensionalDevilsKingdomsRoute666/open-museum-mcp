@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Met search works again.** The Met retired `/public/collection/v1/search` on 2026-10-01 (it now answers HTTP 410) in favour of the paginated `/public/collection/v1.1/search`. The adapter now queries the successor, requesting exactly the count it needs with an explicit `limit` and `offset` and paging past the endpoint's 500-per-call ceiling, so a Met search returns results again instead of an empty list. Object lookup by id is unchanged. The `isPublicDomain` search parameter is not sent; the new endpoint ignores it, and rights are still enforced per record after fetch.
+- **A malformed numeric character reference in museum text no longer hides the record.** The shared text sanitizer decoded every `&#N;` and `&#xH;` with `String.fromCodePoint`, which throws `RangeError` for values above `0x10FFFF` (for example `&#99999999;` or `&#x110000;`). One such escape in a title, description or artist name made the adapter's `normalize()` throw, so the record dropped out of search results and a direct lookup, its citation and its clearance manifest all failed with an error. References are now decoded only when they name a Unicode scalar value (`0`–`0x10FFFF`, excluding the surrogate range `0xD800`–`0xDFFF`); anything else is kept verbatim. Surrogate references previously decoded to a lone UTF-16 surrogate and are now kept verbatim too. Rights decisions are unaffected.
 
 ## [0.21.0] — 2026-09-10
 
