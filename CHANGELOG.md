@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Met search works again.** The Met retired `/public/collection/v1/search` on 2026-10-01 (it now answers HTTP 410) in favour of the paginated `/public/collection/v1.1/search`. The adapter now queries the successor, requesting exactly the count it needs with an explicit `limit` and `offset` and paging past the endpoint's 500-per-call ceiling, so a Met search returns results again instead of an empty list. Object lookup by id is unchanged. The `isPublicDomain` search parameter is not sent; the new endpoint ignores it, and rights are still enforced per record after fetch.
+
 - **Harvard search no longer returns the same off-topic record for unrelated queries.** Harvard's `q` parameter ORs every term and does not drop stop words, so a query containing a common word matched most of the collection, and one verbose photograph ranked first for all of them. The adapter now uses Harvard's `keyword` parameter, which requires every content term. A query containing a term no record carries now returns nothing instead of noise.
 
 ## [0.21.0] — 2026-09-10
