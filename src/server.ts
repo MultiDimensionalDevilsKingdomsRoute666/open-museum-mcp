@@ -73,7 +73,7 @@ const FETCHERS: Record<string, Fetcher> = {
   // Getty Museum — FEDERATE via the public SPARQL endpoint (no REST search or
   // bulk dump exists); per-record REST hydration, keyless, no key required.
   [gettyFetcher.code]: gettyFetcher,
-  // Yale Center for British Art — FEDERATE via Yale's LUX search API; rights read
+  // Yale Center for British Art: FEDERATE via Yale's LUX search API; rights read
   // per object from the YCBA IIIF manifest, keyless, no key required.
   [ycbaFetcher.code]: ycbaFetcher,
 };

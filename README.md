@@ -31,7 +31,7 @@ There are excellent single-museum servers (`metmuseum-mcp`, `rijksmuseum-mcp`, `
 
 ## What you get
 
-- **Many museums, one query.** The Met, Rijksmuseum (direct), the Smithsonian, Cleveland, the Art Institute of Chicago, SMK (National Gallery of Denmark), the Walters, Wellcome Collection, the National Gallery of Art (Washington), Harvard Art Museums, the J. Paul Getty Museum, the Yale Center for British Art, Wikimedia Commons, and Europeana are live — keyless where the museum allows it, opt-in via a free API key where required — and the list keeps growing.
+- **Many museums, one query.** The Met, Rijksmuseum (direct), the Smithsonian, Cleveland, the Art Institute of Chicago, SMK (National Gallery of Denmark), the Walters, Wellcome Collection, the National Gallery of Art (Washington), Harvard Art Museums, the J. Paul Getty Museum, the Yale Center for British Art, Wikimedia Commons, and Europeana are live, keyless where the museum allows it and opt-in via a free API key where required, and the list keeps growing.
 - **Strict deny on ambiguity.** Records are validated against per-museum rights rules in code. Missing or unclear indicators drop the record; nothing is defaulted to "open".
 - **Catalog-grade metadata.** A dynasty-aware date parser handles Tang, Edo, Safavid, Mughal and the rest. Regions normalize across museums. Attribution separates named artists from anonymous, workshop, "after", and attributed works. Date-range filter on `search_artworks` for queries like *Dutch genre painting 1640–1680*.
 - **Citation-ready output.** Three citation styles (`full`, `caption`, `short`) generated deterministically from the same record — paste straight into a paper, a slide caption, or an inline reference.

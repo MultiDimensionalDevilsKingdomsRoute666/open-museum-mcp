@@ -27,7 +27,7 @@ describe('FETCHER_REGISTRY (engine coverage metadata)', () => {
     expect(ingestOnly).toEqual(['nga', 'walters']);
   });
 
-  it('matches the fleet-confirmed ground truth: 11 always-available (no key) + 3 key-gated', () => {
+  it('counts 11 always-available (no key) + 3 key-gated sources', () => {
     const alwaysAvailable = FETCHER_REGISTRY.filter((e) => !e.requiresApiKey);
     expect(alwaysAvailable.length).toBe(11);
   });
