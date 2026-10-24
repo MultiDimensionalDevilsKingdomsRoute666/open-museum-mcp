@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Yale Center for British Art (`ycba`), keyless.** Searched through Yale's LUX platform with every query scoped to YCBA's holdings, then hydrated in two hops: the LUX record, then the YCBA IIIF manifest it links to. A work is accepted only when the manifest's Copyright Statement is exactly `Public Domain` and the image canvas's Image Use Rights is exactly YCBA's CC0 1.0 statement; a missing, unreadable or disagreeing signal rejects the record. Accepted works are emitted as `CC0`, the museum's own dedication of the image. Exported from `/core` and listed in `FETCHER_REGISTRY`; Yale's IIIF image host is added to the colour-extraction allowlist.
+
 ### Fixed
 
 - **Met search works again.** The Met retired `/public/collection/v1/search` on 2026-10-01 (it now answers HTTP 410) in favour of the paginated `/public/collection/v1.1/search`. The adapter now queries the successor, requesting exactly the count it needs with an explicit `limit` and `offset` and paging past the endpoint's 500-per-call ceiling, so a Met search returns results again instead of an empty list. Object lookup by id is unchanged. The `isPublicDomain` search parameter is not sent; the new endpoint ignores it, and rights are still enforced per record after fetch.
