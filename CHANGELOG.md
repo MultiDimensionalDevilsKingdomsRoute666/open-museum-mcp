@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Met search works again.** The Met retired `/public/collection/v1/search` on 2026-10-01 (it now answers HTTP 410) in favour of the paginated `/public/collection/v1.1/search`. The adapter now queries the successor, requesting exactly the count it needs with an explicit `limit` and `offset` and paging past the endpoint's 500-per-call ceiling, so a Met search returns results again instead of an empty list. Object lookup by id is unchanged. The `isPublicDomain` search parameter is not sent; the new endpoint ignores it, and rights are still enforced per record after fetch.
 
+### Changed
+
+- **The Wikimedia Commons adapter uses the shared HTML stripper.** It carried its own copy, which removed tags with a `/<[^>]*>/g` replace. That replace takes time quadratic in the length of a run of unclosed `<`, and it ran on uploader-written fields (`ObjectName`, `Artist`, `ImageDescription`) before their length caps. The shared stripper in `sanitize.ts`, which the other adapters reach through `sanitizeTitle` and its siblings, removes tags in one linear pass with the same output, and its entity table is identical. Normalizing a record with 100,000 unclosed `<` in one of those fields took 14 to 17 seconds before and takes under 20 ms now.
+
 ## [0.21.0] — 2026-09-10
 
 ### Added
