@@ -533,6 +533,55 @@ describe('stripHtml — polynomial-ReDoS guard (CodeQL js/polynomial-redos)', ()
 });
 
 // ---------------------------------------------------------------------------
+// Numeric character references outside the Unicode range must not throw.
+// String.fromCodePoint raises RangeError above 0x10FFFF, so one malformed
+// escape in a museum field would make normalize() throw and hide a clear work.
+// ---------------------------------------------------------------------------
+
+describe('stripHtml — numeric character references outside the Unicode range', () => {
+  it('leaves an out-of-range decimal reference verbatim', () => {
+    expect(stripHtml('a &#99999999; b')).toBe('a &#99999999; b');
+    expect(stripHtml('&#1114112;')).toBe('&#1114112;');
+    expect(stripHtml('&#99999999999999999999999;')).toBe('&#99999999999999999999999;');
+  });
+
+  it('leaves an out-of-range hex reference verbatim', () => {
+    expect(stripHtml('a &#x110000; b')).toBe('a &#x110000; b');
+    expect(stripHtml('&#XFFFFFFFF;')).toBe('&#XFFFFFFFF;');
+  });
+
+  it('leaves surrogate code points verbatim (decimal and hex)', () => {
+    expect(stripHtml('&#55296;')).toBe('&#55296;'); // 0xD800
+    expect(stripHtml('&#57343;')).toBe('&#57343;'); // 0xDFFF
+    expect(stripHtml('&#xD800;')).toBe('&#xD800;');
+    expect(stripHtml('&#xdfff;')).toBe('&#xdfff;');
+  });
+
+  it('decodes the valid boundary values on either side of each excluded range', () => {
+    expect(stripHtml('&#x10FFFF;')).toBe(String.fromCodePoint(0x10ffff));
+    expect(stripHtml('&#1114111;')).toBe(String.fromCodePoint(0x10ffff));
+    expect(stripHtml('&#xD7FF;')).toBe(String.fromCodePoint(0xd7ff));
+    expect(stripHtml('&#xE000;')).toBe(String.fromCodePoint(0xe000));
+    expect(stripHtml('x&#0;y')).toBe(`x${String.fromCodePoint(0)}y`);
+  });
+
+  it('still decodes ordinary references, including leading zeros and astral characters', () => {
+    expect(stripHtml('&#65;&#x42;&#0067;')).toBe('ABC');
+    expect(stripHtml('&#233;t&#xE9;')).toBe('été');
+    expect(stripHtml('&#x1F3A8;')).toBe('🎨');
+  });
+
+  it('met: a malformed reference in the title no longer makes normalize() throw', () => {
+    let result: ReturnType<typeof metFetcher.normalize> | undefined;
+    expect(() => {
+      result = metFetcher.normalize(metRaw({ title: 'Sunflowers &#99999999; &#x110000; &#xD800; &amp; &#233;t&#xE9;' }));
+    }).not.toThrow();
+    accepted(result!);
+    expect(result!.artwork.title).toBe('Sunflowers &#99999999; &#x110000; &#xD800; & été');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // C2 regression: redirect TOCTOU — defaultFetchImage must re-validate Location
 // ---------------------------------------------------------------------------
 
